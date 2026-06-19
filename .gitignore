@@ -1,0 +1,10 @@
+outputs/
+.qascan_cache/
+*.storage-state.json
+.env
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/

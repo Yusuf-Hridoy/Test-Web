@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Broken fixture</title>
+</head>
+<body>
+  <h1>Deliberately broken page</h1>
+
+  <!-- Broken image: src points at a file that does not exist -->
+  <img src="does-not-exist.png" alt="missing asset">
+
+  <!-- Accessibility: image with no alt attribute -->
+  <img src="does-not-exist-2.png">
+
+  <!-- Accessibility: low-contrast text (light grey on white) -->
+  <p style="color:#eeeeee; background:#ffffff;">Low contrast text that fails WCAG.</p>
+
+  <!-- Dead link: points at a sibling file that returns 404 over HTTP -->
+  <a href="this-page-does-not-exist.html">Dead link</a>
+
+  <!-- A live, same-domain link to crawl -->
+  <a href="ok.html">A working page</a>
+
+  <script>
+    // Console error on load.
+    console.error("fixture console error");
+  </script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+name: saucedemo-heal
+target:
+  base_url: "https://www.saucedemo.com"
+cases:
+  - id: login-flow
+    name: Login flow with a broken selector (forces a heal)
+    steps:
+      - {action: goto, target: "/"}
+      - {action: fill, selector: "#user-name", value: "standard_user", hint: "the username field"}
+      - {action: fill, selector: "#password", value: "secret_sauce", hint: "the password field"}
+      # Deliberately WRONG selector — must self-heal from the hint:
+      - {action: click, selector: "#totally-wrong-login", hint: "the green Login button that submits the login form"}
+      - {action: expect, assert: url, value: "inventory"}
+      - {action: expect, assert: visible, selector: ".inventory_list"}
+      - {action: verify_nl, value: "the page shows a list of products that can be added to a cart"}

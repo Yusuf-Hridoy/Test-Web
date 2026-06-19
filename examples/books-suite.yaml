@@ -1,0 +1,16 @@
+name: books-smoke
+target:
+  base_url: "https://books.toscrape.com"
+cases:
+  - id: home-page
+    name: Home page renders catalogue
+    steps:
+      - {action: goto, target: "/"}
+      - {action: expect, assert: url, value: "toscrape"}
+      - {action: expect, assert: visible, selector: "h1"}
+      - {action: expect, assert: count, selector: ".product_pod", value: "20"}
+  - id: known-failure
+    name: Demonstrates a per-case failure
+    steps:
+      - {action: goto, target: "/"}
+      - {action: expect, assert: text, selector: "h1", value: "This text is not on the page"}

@@ -1,0 +1,27 @@
+name: login-and-confirm-products-inventory
+target:
+  base_url: https://www.saucedemo.com
+cases:
+- id: login-and-confirm-products-inventory
+  name: Login and confirm products inventory
+  steps:
+  - action: goto
+    target: https://www.saucedemo.com/
+  - action: fill
+    target: Username
+    selector: '#user-name'
+    hint: Username input field
+    value: standard_user
+  - action: fill
+    target: Password
+    selector: '#password'
+    hint: Password input field
+    value: secret_sauce
+  - action: click
+    target: Login
+    selector: '#login-button'
+    hint: Login button
+  - action: expect
+    assert: url
+    value: inventory
+  source: generated

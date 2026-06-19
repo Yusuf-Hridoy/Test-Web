@@ -1,0 +1,15 @@
+name: smoke
+target:
+  base_url: "http://localhost:8000"
+cases:
+  - id: signin-flow
+    name: Sign-in flow
+    steps:
+      - {action: goto, target: "/form.html"}
+      - {action: fill, selector: "#name", value: "Ada", hint: "the name field"}
+      - {action: click, selector: "#go", hint: "the continue button"}
+      - {action: wait}
+      - {action: expect, assert: url, value: "welcome"}
+      - {action: expect, assert: visible, selector: "#title"}
+      - {action: expect, assert: text, selector: "#title", value: "Welcome aboard"}
+      - {action: expect, assert: count, selector: ".item", value: "2"}
