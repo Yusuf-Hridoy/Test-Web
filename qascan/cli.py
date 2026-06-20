@@ -20,6 +20,13 @@ app.add_typer(auth_app, name="auth")
 def _main() -> None:
     """qascan — oracle-free web QA scanner."""
     # Presence of a callback keeps `scan` as a named subcommand (per CLAUDE.md).
+    import logging
+    import os
+
+    logging.basicConfig(
+        level=os.getenv("QASCAN_LOG_LEVEL", "WARNING").upper(),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
 
 
 @app.command()
@@ -32,8 +39,18 @@ def scan(
     ),
     out: Path = typer.Option(Path("outputs"), "--out", help="Output root directory."),
     no_db: bool = typer.Option(False, "--no-db", help="Skip persisting to the database."),
+    checks: str | None = typer.Option(
+        None, "--checks",
+        help="Comma list: exploratory,accessibility,seo,performance "
+             "(default: exploratory,accessibility,seo).",
+    ),
+    performance: bool = typer.Option(
+        False, "--performance", help="Add the heavy Lighthouse performance check."
+    ),
 ) -> None:
     """Crawl URL within hard limits and write a health report."""
+    from .crawler import DEFAULT_CHECKS
+
     settings = Settings.from_env()
     base = settings.to_limits()
     limits = RunLimits(
@@ -41,11 +58,17 @@ def scan(
         max_depth=max_depth if max_depth is not None else base.max_depth,
         time_budget_seconds=timeout if timeout is not None else base.time_budget_seconds,
     )
+    selected = (
+        {c.strip() for c in checks.split(",") if c.strip()} if checks else set(DEFAULT_CHECKS)
+    )
+    if performance:
+        selected.add("performance")
 
     typer.echo(f"Scanning {url} (max_pages={limits.max_pages}, "
-               f"max_depth={limits.max_depth}, budget={limits.time_budget_seconds}s)…")
+               f"max_depth={limits.max_depth}, budget={limits.time_budget_seconds}s) "
+               f"checks={','.join(sorted(selected))}…")
 
-    result = asyncio.run(crawl(url, limits))
+    result = asyncio.run(crawl(url, limits, checks=selected))
     out_dir = write_report(url, result, out_root=out)
 
     counts = {}

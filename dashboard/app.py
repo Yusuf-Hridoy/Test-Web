@@ -12,6 +12,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 
 from qascan.db import models, repository
 from qascan.db.session import get_sessionmaker
@@ -225,5 +226,14 @@ PAGES = {
 }
 
 st.sidebar.title("🔎 qascan")
+st.sidebar.caption("🟢 pass · 🔴 fail (deterministic) · 🟡 needs review "
+                   "(verify_nl / generated) · 🔵 info/unverified")
 choice = st.sidebar.radio("Page", list(PAGES), key="nav")
-PAGES[choice]()
+
+try:
+    PAGES[choice]()
+except OperationalError as exc:
+    st.error("Cannot reach the database. Is Postgres running and DATABASE_URL set?\n\n"
+             f"```\n{exc}\n```")
+except Exception as exc:  # noqa: BLE001 — show a clean error state, not a raw traceback
+    st.error(f"Something went wrong loading this page:\n\n```\n{exc}\n```")

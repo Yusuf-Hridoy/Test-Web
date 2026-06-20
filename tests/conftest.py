@@ -16,23 +16,47 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class _Handler(SimpleHTTPRequestHandler):
+    """Static fixture server with a few synthetic routes for hardening tests:
+    /boom -> 500, /status403 -> 403, /status429 -> 429, /redirect -> 302 to
+    /welcome.html, /doc.pdf -> 200 application/pdf (non-HTML)."""
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(FIXTURES), **kwargs)
 
-    def _maybe_boom(self) -> bool:
-        # Any path containing "boom" returns a 500 to model a server error.
-        if "boom" in self.path:
+    def _special(self) -> bool:
+        p = self.path
+        if "boom" in p:
             self.send_error(500, "Intentional server error")
+            return True
+        if "status403" in p:
+            self.send_error(403, "Forbidden")
+            return True
+        if "status429" in p:
+            self.send_error(429, "Too Many Requests")
+            return True
+        if p.startswith("/redirect"):
+            self.send_response(302)
+            self.send_header("Location", "/welcome.html")
+            self.end_headers()
+            return True
+        if "doc.pdf" in p:
+            body = b"%PDF-1.4 fake pdf body"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if self.command == "GET":
+                self.wfile.write(body)
             return True
         return False
 
     def do_GET(self):  # noqa: N802
-        if self._maybe_boom():
+        if self._special():
             return
         super().do_GET()
 
     def do_HEAD(self):  # noqa: N802
-        if self._maybe_boom():
+        if self._special():
             return
         super().do_HEAD()
 

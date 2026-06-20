@@ -6,6 +6,7 @@ fetched from a CDN at runtime. Each axe ``violation`` becomes one ``Finding``.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from playwright.async_api import Error as PlaywrightError
@@ -45,9 +46,10 @@ async def run_axe(page: Page, url: str, axe_path: Path | None = None) -> list[Fi
             "Bundle it into vendor/axe.min.js (see docs/phase1.md)."
         )
     try:
-        await page.add_script_tag(path=str(path))
-        results = await page.evaluate(_AXE_RUN_JS)
-    except PlaywrightError:
+        await asyncio.wait_for(page.add_script_tag(path=str(path)), timeout=10.0)
+        results = await asyncio.wait_for(page.evaluate(_AXE_RUN_JS), timeout=30.0)
+    except (PlaywrightError, TimeoutError):
+        # axe failed or took too long — a missed a11y check, never a hung run.
         return []
 
     findings: list[Finding] = []

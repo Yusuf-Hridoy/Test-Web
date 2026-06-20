@@ -1,9 +1,10 @@
 """Exploratory checks: page load status, console/page errors, broken images,
 broken links.
 
-Each function returns ``list[Finding]`` and never raises for an unhealthy page
-— a broken page is a result, not an exception. Link liveness is checked once
-per unique URL across the whole crawl (the cache lives in ``LinkChecker``).
+Each function returns ``list[Finding]`` and never raises for an unhealthy page.
+Accuracy guards (Phase 5): console errors are split first-party vs third-party;
+link liveness distinguishes *broken* (404/4xx/5xx) from *blocked/unverified*
+(403/429/timeout) so rate-limiting and bot-blocking don't read as dead links.
 """
 
 from __future__ import annotations
@@ -16,22 +17,19 @@ from playwright.async_api import Error as PlaywrightError
 
 from ..config import RunLimits
 from ..findings import Finding, Severity
+from ..urls import is_third_party
 
 CHECK = "exploratory"
 
-# Hrefs we never treat as navigable / checkable links.
 _SKIP_PREFIXES = ("mailto:", "tel:", "javascript:", "data:", "blob:", "about:")
+_EVAL_TIMEOUT = 10.0  # seconds — nothing in-page may hang the run
 
 
 class ConsoleCollector:
-    """Captures ``console.error`` output and uncaught page exceptions.
-
-    Attach once to a reused page; call :meth:`reset` before each navigation so
-    messages are scoped to the page currently being scanned.
-    """
+    """Captures ``console.error`` (with source URL) and uncaught page exceptions."""
 
     def __init__(self) -> None:
-        self.console_errors: list[str] = []
+        self.console_errors: list[tuple[str, str]] = []  # (text, source_url)
         self.page_errors: list[str] = []
 
     def attach(self, page: Page) -> None:
@@ -40,9 +38,13 @@ class ConsoleCollector:
 
     def _on_console(self, msg: ConsoleMessage) -> None:
         if msg.type == "error":
-            self.console_errors.append(msg.text)
+            try:
+                src = (msg.location or {}).get("url", "")
+            except Exception:  # noqa: BLE001
+                src = ""
+            self.console_errors.append((msg.text, src))
 
-    def _on_pageerror(self, exc: PlaywrightError) -> None:
+    def _on_pageerror(self, exc) -> None:
         self.page_errors.append(str(exc).splitlines()[0] if str(exc) else "uncaught error")
 
     def reset(self) -> None:
@@ -53,51 +55,37 @@ class ConsoleCollector:
 def check_page_status(response: Response | None, url: str) -> list[Finding]:
     """Non-2xx/3xx response -> critical ``page_error``."""
     if response is None:
-        # Navigation produced no response object (e.g. about:blank); not fatal.
         return []
-    status = response.status
-    if status >= 400:
-        return [
-            Finding.create(
-                check=CHECK,
-                type="page_error",
-                severity=Severity.CRITICAL,
-                title=f"Page returned HTTP {status}",
-                detail=f"{url} responded with status {status}.",
-                page_url=url,
-                key=str(status),
-            )
-        ]
+    if response.status >= 400:
+        return [Finding.create(
+            check=CHECK, type="page_error", severity=Severity.CRITICAL,
+            title=f"Page returned HTTP {response.status}",
+            detail=f"{url} responded with status {response.status}.",
+            page_url=url, key=str(response.status),
+        )]
     return []
 
 
 def check_console(collector: ConsoleCollector, url: str) -> list[Finding]:
-    """Drain captured console errors and uncaught exceptions into findings."""
+    """Drain console errors (split first/third-party) and uncaught exceptions."""
     findings: list[Finding] = []
-    for text in collector.console_errors:
-        findings.append(
-            Finding.create(
-                check=CHECK,
-                type="console_error",
-                severity=Severity.WARNING,
-                title="Console error",
-                detail=text,
-                page_url=url,
-                key=text,
-            )
-        )
+    for text, src in collector.console_errors:
+        if is_third_party(url, src):
+            findings.append(Finding.create(
+                check=CHECK, type="console_error_thirdparty", severity=Severity.MINOR,
+                title="Console error (third-party script)",
+                detail=f"{text}  [source: {src}]", page_url=url, key=f"3p|{text}",
+            ))
+        else:
+            findings.append(Finding.create(
+                check=CHECK, type="console_error", severity=Severity.WARNING,
+                title="Console error", detail=text, page_url=url, key=text,
+            ))
     for text in collector.page_errors:
-        findings.append(
-            Finding.create(
-                check=CHECK,
-                type="console_error",
-                severity=Severity.WARNING,
-                title="Uncaught JavaScript exception",
-                detail=text,
-                page_url=url,
-                key=text,
-            )
-        )
+        findings.append(Finding.create(
+            check=CHECK, type="console_error", severity=Severity.WARNING,
+            title="Uncaught JavaScript exception", detail=text, page_url=url, key=text,
+        ))
     return findings
 
 
@@ -109,41 +97,36 @@ _BROKEN_IMG_JS = """
 """
 
 
+async def _bounded_eval(page: Page, script: str, default):
+    """page.evaluate with a hard timeout — never let in-page JS hang a run."""
+    try:
+        return await asyncio.wait_for(page.evaluate(script), timeout=_EVAL_TIMEOUT)
+    except (PlaywrightError, TimeoutError):
+        return default
+
+
 async def check_broken_images(page: Page, url: str) -> list[Finding]:
     """In-page check: images that finished loading with zero natural width."""
-    try:
-        srcs: list[str] = await page.evaluate(_BROKEN_IMG_JS)
-    except PlaywrightError:
-        return []
+    srcs: list[str] = await _bounded_eval(page, _BROKEN_IMG_JS, [])
     findings: list[Finding] = []
-    for src in dict.fromkeys(srcs):  # dedupe, preserve order
-        findings.append(
-            Finding.create(
-                check=CHECK,
-                type="broken_image",
-                severity=Severity.WARNING,
-                title="Broken image",
-                detail=f"Image failed to load: {src}",
-                page_url=url,
-                key=src,
-            )
-        )
+    for src in dict.fromkeys(srcs):
+        findings.append(Finding.create(
+            check=CHECK, type="broken_image", severity=Severity.WARNING,
+            title="Broken image", detail=f"Image failed to load: {src}",
+            page_url=url, key=src,
+        ))
     return findings
 
 
 _EXTRACT_LINKS_JS = """
 () => Array.from(document.querySelectorAll('a[href]'))
-    .map(a => a.href)
-    .filter(h => h && h.length > 0)
+    .map(a => a.href).filter(h => h && h.length > 0)
 """
 
 
 async def extract_links(page: Page) -> list[str]:
     """Return absolute hrefs on the page, fragments stripped, junk schemes dropped."""
-    try:
-        hrefs: list[str] = await page.evaluate(_EXTRACT_LINKS_JS)
-    except PlaywrightError:
-        return []
+    hrefs: list[str] = await _bounded_eval(page, _EXTRACT_LINKS_JS, [])
     cleaned: list[str] = []
     for href in hrefs:
         href = href.split("#", 1)[0]
@@ -153,37 +136,36 @@ async def extract_links(page: Page) -> list[str]:
     return list(dict.fromkeys(cleaned))
 
 
+# HTTP statuses that mean "we couldn't verify" (blocked / rate-limited), NOT broken.
+_BLOCKED_STATUSES = {401, 403, 429}
+
+
 class LinkChecker:
     """Liveness checker with a process-wide cache so each URL is hit once."""
 
     def __init__(self, limits: RunLimits) -> None:
         self._limits = limits
         self._sem = asyncio.Semaphore(limits.link_concurrency)
-        # url -> status code (or None for a connection/timeout error).
         self._cache: dict[str, int | None] = {}
 
     async def _probe(self, client: httpx.AsyncClient, url: str) -> int | None:
         if url in self._cache:
             return self._cache[url]
         async with self._sem:
-            status: int | None
             try:
                 resp = await client.head(url)
-                if resp.status_code == 405:  # method not allowed -> retry with GET
+                if resp.status_code in (405, 501):  # method not allowed -> GET
                     resp = await client.get(url)
-                status = resp.status_code
+                status: int | None = resp.status_code
             except httpx.HTTPError:
                 status = None
             self._cache[url] = status
             return status
 
     async def check(self, link_sources: dict[str, str]) -> list[Finding]:
-        """Check a ``{url: page_url_where_first_seen}`` map; emit broken_link findings.
-
-        A URL is broken if it returns 4xx/5xx or fails to connect/times out.
-        """
+        """Classify each unique link: broken vs blocked/unverified vs ok."""
         findings: list[Finding] = []
-        headers = {"User-Agent": "qascan/0.1 (+https://github.com/qascan)"}
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; qascan/0.1; +qascan)"}
         timeout = httpx.Timeout(self._limits.link_timeout_seconds)
         async with httpx.AsyncClient(
             follow_redirects=True, timeout=timeout, headers=headers
@@ -191,21 +173,26 @@ class LinkChecker:
             urls = list(link_sources)
             statuses = await asyncio.gather(*(self._probe(client, u) for u in urls))
             for url, status in zip(urls, statuses, strict=True):
+                page_url = link_sources[url]
                 if status is None:
-                    detail = f"Link could not be reached (connection error or timeout): {url}"
+                    # Could not connect/timed out — unknown, not provably broken.
+                    findings.append(Finding.create(
+                        check=CHECK, type="link_unverified", severity=Severity.INFO,
+                        title="Link could not be verified",
+                        detail=f"No response (timeout/connection error): {url}",
+                        page_url=page_url, key=url,
+                    ))
+                elif status in _BLOCKED_STATUSES:
+                    findings.append(Finding.create(
+                        check=CHECK, type="link_blocked", severity=Severity.INFO,
+                        title="Link blocked (could not verify)",
+                        detail=f"HTTP {status} (rate-limited or bot-blocked): {url}",
+                        page_url=page_url, key=url,
+                    ))
                 elif status >= 400:
-                    detail = f"Link returned HTTP {status}: {url}"
-                else:
-                    continue
-                findings.append(
-                    Finding.create(
-                        check=CHECK,
-                        type="broken_link",
-                        severity=Severity.WARNING,
-                        title="Broken link",
-                        detail=detail,
-                        page_url=link_sources[url],
-                        key=url,
-                    )
-                )
+                    findings.append(Finding.create(
+                        check=CHECK, type="broken_link", severity=Severity.WARNING,
+                        title="Broken link", detail=f"Link returned HTTP {status}: {url}",
+                        page_url=page_url, key=url,
+                    ))
         return findings
