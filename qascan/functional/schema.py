@@ -59,6 +59,8 @@ class TargetConfig(BaseModel):
 
 
 class TestCase(BaseModel):
+    __test__ = False  # not a pytest test class (name starts with "Test")
+
     id: str
     name: str
     steps: list[Step]

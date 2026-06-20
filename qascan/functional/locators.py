@@ -82,6 +82,16 @@ class HealCache:
         """All cached heals (for the report's needs-review section)."""
         return [{"step": k, **v} for k, v in self._data.items()]
 
+    def remove(self, step_key: str) -> bool:
+        """Drop a cached heal so the step re-heals on the next run. Returns True
+        if an entry was removed."""
+        if step_key not in self._data:
+            return False
+        del self._data[step_key]
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._path.write_text(json.dumps(self._data, indent=2), encoding="utf-8")
+        return True
+
 
 async def _resolves(page: Page, selector: str) -> Locator | None:
     """Return the locator if the selector matches exactly one visible element."""

@@ -85,3 +85,38 @@ def isolated_cache(tmp_path, monkeypatch):
     no cross-test cache contamination."""
     monkeypatch.setenv("QASCAN_CACHE_DIR", str(tmp_path / "cache"))
     return tmp_path
+
+
+@pytest.fixture(scope="session")
+def db_engine():
+    """Engine bound to the test database (DATABASE_URL_TEST). Skips if unset."""
+    import os
+
+    from dotenv import load_dotenv
+
+    from qascan.db.session import get_engine
+
+    load_dotenv()
+    url = os.getenv("DATABASE_URL_TEST")
+    if not url:
+        pytest.skip("DATABASE_URL_TEST not set — skipping DB tests.")
+    engine = get_engine(url)
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture
+def db_session(db_engine):
+    """Fresh schema per test (drop + create), yielding a session."""
+    from sqlalchemy.orm import sessionmaker
+
+    from qascan.db.models import Base
+
+    Base.metadata.drop_all(db_engine)
+    Base.metadata.create_all(db_engine)
+    factory = sessionmaker(bind=db_engine, expire_on_commit=False, future=True)
+    session = factory()
+    try:
+        yield session
+    finally:
+        session.close()

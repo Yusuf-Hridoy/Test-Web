@@ -31,6 +31,7 @@ def scan(
         None, "--timeout", help="Time budget in seconds."
     ),
     out: Path = typer.Option(Path("outputs"), "--out", help="Output root directory."),
+    no_db: bool = typer.Option(False, "--no-db", help="Skip persisting to the database."),
 ) -> None:
     """Crawl URL within hard limits and write a health report."""
     settings = Settings.from_env()
@@ -59,7 +60,35 @@ def scan(
         f"{result.duration_seconds}s"
     )
     typer.echo(f"Report: {out_dir / 'report.html'}")
+    if not no_db:
+        _persist(lambda s: _report_scan_persist(s, url, result))
     # Phase 1 is an audit, not a gate — always exit 0.
+
+
+def _persist(work) -> None:
+    """Run a persistence callback in a transaction; degrade gracefully if no DB."""
+    from .db.session import DatabaseNotConfigured, session_scope
+
+    try:
+        with session_scope() as session:
+            work(session)
+    except DatabaseNotConfigured:
+        typer.echo("No DATABASE_URL set — skipped persistence (results still on disk).")
+    except Exception as exc:  # noqa: BLE001 — persistence must never abort a run
+        typer.echo(f"Warning: could not persist to database ({type(exc).__name__}: {exc}).")
+
+
+def _report_scan_persist(session, url, result) -> None:
+    from .db import repository
+
+    run = repository.persist_scan(session, url, result)
+    session.flush()
+    diff = repository.diff_findings(session, run)
+    typer.echo(
+        f"Saved run #{run.id} to database · diff vs previous: "
+        f"{len(diff['new'])} new, {len(diff['resolved'])} resolved, "
+        f"{len(diff['persisting'])} persisting."
+    )
 
 
 @app.command()
@@ -72,6 +101,7 @@ def run(
     threshold: float = typer.Option(
         0.7, "--heal-threshold", help="Min confidence to accept an LLM heal."
     ),
+    no_db: bool = typer.Option(False, "--no-db", help="Skip persisting to the database."),
 ) -> None:
     """Run a functional suite end-to-end and write a report."""
     from .functional.executor import run_suite
@@ -94,6 +124,13 @@ def run(
             f"(needs review) · {result.duration_seconds}s"
         )
     typer.echo(f"Report: {out_dir / 'report.html'}")
+    if not no_db and result.status != "session_expired":
+        def _save(session):
+            from .db import repository
+            run = repository.persist_functional(session, loaded, result)
+            session.flush()
+            typer.echo(f"Saved run #{run.id} to database.")
+        _persist(_save)
 
 
 @app.command()
