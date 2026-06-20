@@ -81,6 +81,12 @@ def page_run_detail() -> None:
             st.info("No data yet.")
             return
         suite = st.selectbox("Suite", suites, format_func=lambda x: f"{x.name} ({x.kind})")
+        if st.button("▶️ Run now", key=f"run_now_{suite.id}"):
+            from qascan import scheduler
+            with st.spinner(f"Running {suite.name}…"):
+                summary = scheduler.execute_suite(suite.id)
+            st.success(f"Done: {summary}")
+            st.rerun()
         runs = s.scalars(
             select(models.Run).where(models.Run.suite_id == suite.id)
             .order_by(models.Run.id.desc())
@@ -178,9 +184,43 @@ def page_healed() -> None:
                     st.rerun()
 
 
+def page_schedules() -> None:
+    st.header("Schedules")
+    with _session() as s:
+        suites = s.scalars(select(models.Suite).order_by(models.Suite.name)).all()
+        if not suites:
+            st.info("No suites yet.")
+            return
+        with st.form("add_schedule"):
+            suite = st.selectbox("Suite", suites, format_func=lambda x: f"{x.name} ({x.kind})")
+            cron = st.text_input("Cron (5-field)", value="*/5 * * * *")
+            if st.form_submit_button("Add schedule"):
+                repository.add_schedule(s, suite.id, cron)
+                s.commit()
+                st.rerun()
+
+        rows = s.scalars(select(models.Schedule).order_by(models.Schedule.id)).all()
+        for r in rows:
+            suite = s.get(models.Suite, r.suite_id)
+            with st.container(border=True):
+                st.markdown(f"**{suite.name if suite else r.suite_id}** · `{r.cron_expr}` · "
+                            f"{'🟢 enabled' if r.enabled else '⚪ disabled'}")
+                st.caption(f"last run: {r.last_run_at or '—'} · next: {r.next_run_at or '—'}")
+                c1, c2 = st.columns(2)
+                if c1.button("Toggle enabled", key=f"t{r.id}"):
+                    r.enabled = not r.enabled
+                    s.commit()
+                    st.rerun()
+                if c2.button("Delete", key=f"d{r.id}"):
+                    s.delete(r)
+                    s.commit()
+                    st.rerun()
+
+
 PAGES = {
     "Overview": page_overview,
     "Run detail": page_run_detail,
+    "Schedules": page_schedules,
     "Healed selectors": page_healed,
 }
 

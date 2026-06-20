@@ -161,5 +161,96 @@ def auth_capture(
     typer.echo(f"Saved storage state to {path}. Reference it from a suite's target.auth.")
 
 
+schedule_app = typer.Typer(add_completion=False, help="Manage scheduled runs.")
+app.add_typer(schedule_app, name="schedule")
+
+
+@app.command()
+def suites() -> None:
+    """List persisted suites with their ids (for scheduling/triggering)."""
+    from sqlalchemy import select
+
+    from .db import models
+    from .db.session import session_scope
+
+    with session_scope() as s:
+        rows = s.scalars(select(models.Suite).order_by(models.Suite.id)).all()
+        if not rows:
+            typer.echo("No suites yet. Run a scan or functional suite first.")
+            return
+        for x in rows:
+            typer.echo(f"  #{x.id:<3} {x.kind:<11} {x.name}")
+
+
+@app.command()
+def trigger(suite_id: int = typer.Argument(..., help="Suite id (see `qascan suites`).")) -> None:
+    """Run a suite now (manual trigger). Honors the overlap guard."""
+    from . import scheduler
+
+    typer.echo(f"Triggering suite #{suite_id}…")
+    summary = scheduler.execute_suite(suite_id)
+    typer.echo(str(summary))
+
+
+@app.command()
+def worker() -> None:
+    """Run the scheduler worker (blocks): loads enabled schedules and triggers runs."""
+    from . import scheduler
+
+    scheduler.worker()
+
+
+@schedule_app.command("add")
+def schedule_add(
+    suite_id: int = typer.Argument(..., help="Suite id."),
+    cron: str = typer.Argument(..., help='5-field cron, e.g. "*/5 * * * *".'),
+) -> None:
+    """Schedule a suite on a cron expression."""
+    from .db import repository
+    from .db.session import session_scope
+
+    with session_scope() as s:
+        sched = repository.add_schedule(s, suite_id, cron)
+        s.flush()
+        typer.echo(f"Scheduled suite #{suite_id} as schedule #{sched.id} ({cron}). "
+                   "Start `qascan worker` to run it.")
+
+
+@schedule_app.command("list")
+def schedule_list() -> None:
+    """List schedules."""
+    from sqlalchemy import select
+
+    from .db import models
+    from .db.session import session_scope
+
+    with session_scope() as s:
+        rows = s.scalars(select(models.Schedule).order_by(models.Schedule.id)).all()
+        if not rows:
+            typer.echo("No schedules.")
+            return
+        for r in rows:
+            state = "enabled" if r.enabled else "disabled"
+            typer.echo(f"  #{r.id} suite={r.suite_id} '{r.cron_expr}' {state} "
+                       f"last={r.last_run_at}")
+
+
+@app.command("notify-add")
+def notify_add(
+    suite_id: int = typer.Argument(..., help="Suite id."),
+    channel: str = typer.Argument(..., help="slack | email | webhook."),
+    target: str = typer.Argument(..., help="Webhook/Slack URL or email recipient."),
+) -> None:
+    """Add a notification channel for a suite."""
+    from .db import models
+    from .db.session import session_scope
+
+    with session_scope() as s:
+        cfg = models.NotifyConfig(suite_id=suite_id, channel=channel, target=target)
+        s.add(cfg)
+        s.flush()
+        typer.echo(f"Added {channel} notification #{cfg.id} for suite #{suite_id}.")
+
+
 if __name__ == "__main__":
     app()

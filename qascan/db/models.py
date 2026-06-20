@@ -70,6 +70,9 @@ class TestCase(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     suite_id: Mapped[int] = mapped_column(ForeignKey("suites.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String(255))
+    # The schema-level TestCase id (e.g. "login-flow"); preserved so scheduled
+    # reruns rebuild the same StepRefs and keep heal-cache continuity.
+    case_key: Mapped[str | None] = mapped_column(String(255), default=None)
     source: Mapped[str] = mapped_column(String(16), default="written")  # written|generated
     steps: Mapped[list] = mapped_column(JSONB, default=list)
 
@@ -147,3 +150,35 @@ class SelectorCache(Base):
     reviewed: Mapped[bool] = mapped_column(Boolean, default=False)
 
     suite: Mapped[Suite] = relationship(back_populates="selector_cache")
+
+
+class Schedule(Base):
+    __tablename__ = "schedules"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    suite_id: Mapped[int] = mapped_column(ForeignKey("suites.id", ondelete="CASCADE"))
+    cron_expr: Mapped[str] = mapped_column(String(128))  # standard 5-field cron
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    suite: Mapped[Suite] = relationship()
+
+
+class NotifyConfig(Base):
+    __tablename__ = "notify_configs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    suite_id: Mapped[int] = mapped_column(ForeignKey("suites.id", ondelete="CASCADE"))
+    channel: Mapped[str] = mapped_column(String(16))  # slack | email | webhook
+    target: Mapped[str] = mapped_column(Text)  # webhook/slack URL, or email recipient
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Which events fire this channel. Unchanged known issues never alert.
+    on_critical: Mapped[bool] = mapped_column(Boolean, default=True)
+    on_regression: Mapped[bool] = mapped_column(Boolean, default=True)
+    on_failure: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    suite: Mapped[Suite] = relationship()

@@ -119,11 +119,13 @@ def persist_functional(session: Session, suite_schema, run_result) -> models.Run
         )
         if row is None:
             row = models.TestCase(
-                suite_id=suite.id, name=case.name, source=case.source, steps=steps
+                suite_id=suite.id, name=case.name, case_key=case.id,
+                source=case.source, steps=steps,
             )
             session.add(row)
             session.flush()
         else:
+            row.case_key = case.id
             row.source = case.source
             row.steps = steps
         case_ids[case.id] = row.id
@@ -193,6 +195,52 @@ def reject_heal(session: Session, row: models.SelectorCache, suite_name: str,
 
     HealCache(suite_name, root=cache_root).remove(row.step_key)
     session.delete(row)
+
+
+# --------------------------------------------------------------------------- #
+# Rebuilding a runnable suite from the DB (for scheduled runs)
+# --------------------------------------------------------------------------- #
+def rebuild_functional_suite(session: Session, suite_id: int):
+    """Reconstruct a schema.Suite from stored test cases so a scheduled run can
+    reuse the exact Phase-2 run path. (Auth config beyond auth_kind is not yet
+    persisted, so reconstructed suites run unauthenticated.)"""
+    from ..functional.schema import Step, Suite, TargetConfig, TestCase
+
+    suite = session.get(models.Suite, suite_id)
+    if suite is None or suite.kind != "functional":
+        raise ValueError(f"Suite {suite_id} is not a functional suite.")
+    target = session.get(models.Target, suite.target_id)
+    cases = []
+    for row in suite.cases:
+        steps = [Step.model_validate(s) for s in (row.steps or [])]
+        cases.append(TestCase(id=row.case_key or row.name, name=row.name,
+                              steps=steps, source=row.source))
+    return Suite(name=suite.name, target=TargetConfig(base_url=target.base_url), cases=cases)
+
+
+# --------------------------------------------------------------------------- #
+# Schedules
+# --------------------------------------------------------------------------- #
+def add_schedule(session: Session, suite_id: int, cron_expr: str,
+                 enabled: bool = True) -> models.Schedule:
+    sched = models.Schedule(suite_id=suite_id, cron_expr=cron_expr, enabled=enabled)
+    session.add(sched)
+    session.flush()
+    return sched
+
+
+def enabled_schedules(session: Session) -> list[models.Schedule]:
+    return list(session.scalars(
+        select(models.Schedule).where(models.Schedule.enabled.is_(True))
+    ).all())
+
+
+def mark_schedule_ran(session: Session, suite_id: int, last_run, next_run=None) -> None:
+    sched = session.scalar(select(models.Schedule).where(models.Schedule.suite_id == suite_id))
+    if sched:
+        sched.last_run_at = last_run
+        if next_run is not None:
+            sched.next_run_at = next_run
 
 
 # --------------------------------------------------------------------------- #
