@@ -76,11 +76,22 @@ async def _load_robots(seed: str) -> urllib.robotparser.RobotFileParser:
     return rp
 
 
-async def crawl(seed: str, limits: RunLimits, checks: set[str] | None = None) -> CrawlResult:
+async def crawl(
+    seed: str,
+    limits: RunLimits,
+    checks: set[str] | None = None,
+    *,
+    on_progress=None,
+    cancel=None,
+) -> CrawlResult:
     """Crawl ``seed`` within ``limits`` and return findings + run metadata.
 
     ``checks`` selects which check types run (default: exploratory + accessibility
     + seo). 'performance' is heavy and opt-in; it runs once on the seed after crawl.
+
+    ``on_progress`` (optional) is called with ``{"pages", "current"}`` after each page
+    so a UI can show live progress. ``cancel`` (optional ``threading.Event``) stops the
+    crawl cleanly at the next page boundary (browser is still closed; no orphan).
     """
     enabled = set(checks) if checks is not None else set(DEFAULT_CHECKS)
     seed = normalize_url(seed)
@@ -116,6 +127,9 @@ async def crawl(seed: str, limits: RunLimits, checks: set[str] | None = None) ->
                 if deadline_hit():
                     result.stopped_reason = "time_budget"
                     break
+                if cancel is not None and cancel.is_set():
+                    result.stopped_reason = "cancelled"
+                    break
 
                 url, depth = queue.popleft()
                 if url in visited:
@@ -134,6 +148,11 @@ async def crawl(seed: str, limits: RunLimits, checks: set[str] | None = None) ->
                     link_sources, param_variants, enabled, seo,
                 )
                 result.findings.extend(page_findings)
+                if on_progress is not None:
+                    try:
+                        on_progress({"pages": len(visited), "current": url})
+                    except Exception:  # noqa: BLE001 — progress must never break a scan
+                        pass
                 await asyncio.sleep(limits.polite_delay_seconds)
         finally:
             await context.close()

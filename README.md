@@ -95,12 +95,21 @@ qascan auth capture https://app.example.com --out state.json
 ```
 Reference it from a suite's `target.auth` (`kind: storage_state`).
 
-### Dashboard (Phase 3)
+### Web UI — do everything from the screen (Phase 6.5)
 ```bash
 streamlit run dashboard/app.py
 ```
-Overview (history + trend), Run detail (findings, evidence, run-over-run diff),
-Schedules, and the Healed-selector review queue (approve / reject).
+The full front door — no terminal needed:
+- **New scan** — paste a URL, tick checks, Run, watch **live progress** (the scan runs
+  in a background thread so the UI never freezes), Cancel, then see results inline + a
+  downloadable `report.html`.
+- **Functional** — manage targets, guided auth capture, view/run saved suites, and the
+  generate-from-instruction flow (drafts editable steps → save a frozen suite).
+- **History** — run history, drill-down with diffs, the healed-selector review queue,
+  and schedules (toggle / run now).
+
+Both the CLI and the UI call the same **service layer** (`qascan/service.py`) — no
+business logic lives in either shell, so they produce identical results on the same input.
 
 ### Schedule + alerts (Phase 4)
 ```bash
@@ -149,6 +158,7 @@ qascan/
   urls.py               # URL normalize / domain / non-HTML helpers
   checks/               # exploratory + accessibility
   functional/           # schema, locators (self-heal), executor, assertions, auth, generator
+  service.py            # service layer — the shared entry point for CLI + UI
   llm.py                # single Gemini touchpoint
   report.py             # JSON + HTML reports
   db/                   # SQLAlchemy models, session, repository

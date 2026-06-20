@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import typer
 
-from .config import RunLimits, Settings
-from .crawler import crawl
-from .report import write_report
+from . import service
+from .config import RunLimits
 
 app = typer.Typer(add_completion=False, help="qascan — oracle-free web QA scanner")
 auth_app = typer.Typer(add_completion=False, help="Authentication helpers.")
@@ -51,8 +49,7 @@ def scan(
     """Crawl URL within hard limits and write a health report."""
     from .crawler import DEFAULT_CHECKS
 
-    settings = Settings.from_env()
-    base = settings.to_limits()
+    base = service.default_limits()
     limits = RunLimits(
         max_pages=max_pages if max_pages is not None else base.max_pages,
         max_depth=max_depth if max_depth is not None else base.max_depth,
@@ -68,12 +65,11 @@ def scan(
                f"max_depth={limits.max_depth}, budget={limits.time_budget_seconds}s) "
                f"checks={','.join(sorted(selected))}…")
 
-    result = asyncio.run(crawl(url, limits, checks=selected))
-    out_dir = write_report(url, result, out_root=out)
-
-    counts = {}
-    for f in result.findings:
-        counts[f.severity.value] = counts.get(f.severity.value, 0) + 1
+    # Same service-layer call the UI makes.
+    outcome = service.run_scan(url, checks=selected, limits=limits, out_root=out,
+                               persist=not no_db)
+    result = outcome.crawl
+    counts = service.severity_counts(result.findings)
 
     typer.echo(
         f"Done: {result.pages_scanned} page(s), "
@@ -82,36 +78,22 @@ def scan(
         f"minor={counts.get('minor', 0)}) · stopped={result.stopped_reason} · "
         f"{result.duration_seconds}s"
     )
-    typer.echo(f"Report: {out_dir / 'report.html'}")
-    if not no_db:
-        _persist(lambda s: _report_scan_persist(s, url, result))
+    typer.echo(f"Report: {outcome.out_dir / 'report.html'}")
+    _echo_persist(outcome.run_id, outcome.persist_error, outcome.diff)
     # Phase 1 is an audit, not a gate — always exit 0.
 
 
-def _persist(work) -> None:
-    """Run a persistence callback in a transaction; degrade gracefully if no DB."""
-    from .db.session import DatabaseNotConfigured, session_scope
-
-    try:
-        with session_scope() as session:
-            work(session)
-    except DatabaseNotConfigured:
+def _echo_persist(run_id, persist_error, diff=None) -> None:
+    if run_id is not None:
+        msg = f"Saved run #{run_id} to database"
+        if diff is not None:
+            msg += (f" · diff vs previous: {len(diff['new'])} new, "
+                    f"{len(diff['resolved'])} resolved, {len(diff['persisting'])} persisting")
+        typer.echo(msg + ".")
+    elif persist_error == "no_database":
         typer.echo("No DATABASE_URL set — skipped persistence (results still on disk).")
-    except Exception as exc:  # noqa: BLE001 — persistence must never abort a run
-        typer.echo(f"Warning: could not persist to database ({type(exc).__name__}: {exc}).")
-
-
-def _report_scan_persist(session, url, result) -> None:
-    from .db import repository
-
-    run = repository.persist_scan(session, url, result)
-    session.flush()
-    diff = repository.diff_findings(session, run)
-    typer.echo(
-        f"Saved run #{run.id} to database · diff vs previous: "
-        f"{len(diff['new'])} new, {len(diff['resolved'])} resolved, "
-        f"{len(diff['persisting'])} persisting."
-    )
+    elif persist_error:
+        typer.echo(f"Warning: could not persist to database ({persist_error}).")
 
 
 @app.command()
@@ -127,15 +109,14 @@ def run(
     no_db: bool = typer.Option(False, "--no-db", help="Skip persisting to the database."),
 ) -> None:
     """Run a functional suite end-to-end and write a report."""
-    from .functional.executor import run_suite
     from .functional.schema import Suite
 
     loaded = Suite.from_file(suite)
     typer.echo(f"Running suite '{loaded.name}' ({len(loaded.cases)} case(s)) "
                f"against {loaded.target.base_url}…")
-    result, out_dir = asyncio.run(
-        run_suite(loaded, out_root=out, continue_on_fail=continue_on_fail, threshold=threshold)
-    )
+    outcome = service.run_functional(loaded, out_root=out, persist=not no_db,
+                                     continue_on_fail=continue_on_fail, threshold=threshold)
+    result = outcome.result
 
     if result.status == "session_expired":
         typer.echo(f"Session expired — suite NOT run. {result.message}")
@@ -146,14 +127,8 @@ def run(
             f"{result.llm_calls} LLM call(s) · {len(result.healed_for_review)} healed "
             f"(needs review) · {result.duration_seconds}s"
         )
-    typer.echo(f"Report: {out_dir / 'report.html'}")
-    if not no_db and result.status != "session_expired":
-        def _save(session):
-            from .db import repository
-            run = repository.persist_functional(session, loaded, result)
-            session.flush()
-            typer.echo(f"Saved run #{run.id} to database.")
-        _persist(_save)
+    typer.echo(f"Report: {outcome.out_dir / 'report.html'}")
+    _echo_persist(outcome.run_id, outcome.persist_error)
 
 
 @app.command()
@@ -163,10 +138,8 @@ def generate(
     out: Path = typer.Option(..., "--out", help="Where to write the generated Suite YAML."),
 ) -> None:
     """Draft an editable TestCase YAML from a plain instruction (compile-once)."""
-    from .functional.generator import generate as generate_case
-
     typer.echo(f"Exploring {url} once and drafting a test case…")
-    suite, path = asyncio.run(generate_case(url, instruction, out))
+    suite, path = service.generate_suite(url, instruction, out)
     n = len(suite.cases[0].steps) if suite.cases else 0
     typer.echo(f"Wrote generated suite to {path} ({n} step(s)). "
                "Review/edit it, then run with `qascan run`.")
@@ -178,9 +151,7 @@ def auth_capture(
     out: Path = typer.Option(..., "--out", help="Where to save the storage-state JSON."),
 ) -> None:
     """Open a headed browser, let a human log in, then save the session state."""
-    from .functional.auth import capture_storage_state
-
-    path = asyncio.run(capture_storage_state(url, out))
+    path = service.capture_auth(url, out)
     typer.echo(f"Saved storage state to {path}. Reference it from a suite's target.auth.")
 
 

@@ -1,4 +1,5 @@
 outputs/
+suites/
 .qascan_cache/
 *.storage-state.json
 .env
