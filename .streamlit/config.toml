@@ -1,0 +1,15 @@
+# qascan UI theme. Tokens mirror dashboard/theme.py (the injected CSS does the
+# heavy lifting; these set Streamlit's native chrome to match).
+[theme]
+base = "dark"
+primaryColor = "#6366F1"
+backgroundColor = "#0B0D12"
+secondaryBackgroundColor = "#14171D"
+textColor = "#E7E9EE"
+borderColor = "#262B36"
+font = "Inter"
+headingFont = "Space Grotesk"
+codeFont = "JetBrains Mono"
+
+[client]
+toolbarMode = "minimal"

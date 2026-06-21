@@ -55,3 +55,5 @@ ignore = ["UP042"]
 [tool.ruff.lint.per-file-ignores]
 # Typer's Option/Argument-in-defaults is the documented idiom.
 "qascan/cli.py" = ["B008"]
+# theme.py embeds a CSS string with legitimately long rules.
+"dashboard/theme.py" = ["E501"]
