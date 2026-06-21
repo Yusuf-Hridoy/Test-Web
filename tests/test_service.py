@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import threading
 
+import pytest
 from conftest import FakeLLM
 
 from qascan import llm, service
@@ -84,3 +85,29 @@ def test_service_generate_then_run_zero_planning(http_server, tmp_path, monkeypa
     outcome = service.run_functional(Suite.from_file(out), out_root=tmp_path, persist=False)
     assert outcome.result.status == "pass"
     assert fake.calls == []  # running never re-plans (criterion 4)
+
+
+# --------------------------------------------------------------------------- #
+# Regression: get_run_detail materializes children so the UI can read them
+# AFTER the session closes (the DetachedInstanceError bug).
+# --------------------------------------------------------------------------- #
+def test_get_run_detail_after_session_close(http_server, tmp_path, db_session, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", os.getenv("DATABASE_URL_TEST"))
+    outcome = service.run_scan(f"{http_server}/broken.html",
+                               limits=RunLimits(max_pages=1, max_depth=0),
+                               out_root=tmp_path, persist=True)
+    assert outcome.run_id is not None
+
+    # get_run_detail opens AND closes its own session internally; the returned
+    # object must be fully materialized. Pre-fix this access raised
+    # DetachedInstanceError.
+    detail = service.get_run_detail(outcome.run_id)
+    assert len(detail.findings) > 0
+    assert detail.run.status in ("warning", "minor", "critical", "healthy", "info")
+    assert isinstance(detail.diff, dict) and "new" in detail.diff
+
+
+def test_get_run_detail_bad_id_raises(db_session, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", os.getenv("DATABASE_URL_TEST"))
+    with pytest.raises(service.RunNotFound):
+        service.get_run_detail(999_999)
