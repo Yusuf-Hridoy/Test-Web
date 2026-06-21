@@ -132,8 +132,13 @@ def run_scan(
     on_progress=None, cancel=None,
 ) -> ScanOutcome:
     """Run an oracle-free scan: crawl -> report -> (optional) persist + diff."""
+    from . import aggregate
+
     limits = limits or default_limits()
     result = asyncio.run(crawl(url, limits, checks=checks, on_progress=on_progress, cancel=cancel))
+    # Collapse raw occurrences into distinct, stably-keyed findings before anything
+    # downstream (report, DB, diff) sees them — so counts and the diff reconcile.
+    result.findings = aggregate.group(result.findings)
     out_dir = write_report(url, result, out_root=out_root)
 
     outcome = ScanOutcome(crawl=result, out_dir=out_dir)

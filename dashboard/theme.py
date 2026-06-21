@@ -233,15 +233,48 @@ def step_row(step: dict, index: int) -> str:
             f'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">{inner}</div></div>')
 
 
+def _finding_detail_html(check: str, detail: str, meta: dict, occurrences: int,
+                         pages: list[str]) -> str:
+    """Structured, escaped detail for a finding — no pipe walls; selectors truncated."""
+    m = meta or {}
+    if check == "accessibility" and (m.get("rule_id") or m.get("impact")):
+        parts = []
+        if m.get("rule_id"):
+            parts.append(f'<span class="qs-mono-chip">{html.escape(m["rule_id"])}</span>')
+        if m.get("impact"):
+            parts.append(f'<span class="qs-hint">axe impact: '
+                         f'<strong>{html.escape(m["impact"])}</strong></span>')
+        targets = m.get("targets") or []
+        total = m.get("total_elements", len(targets))
+        body = "".join(parts)
+        if targets:
+            shown = ", ".join(html.escape(t[:50] + ("…" if len(t) > 50 else "")) for t in targets)
+            more = f" +{total - len(targets)} more" if total > len(targets) else ""
+            body += f'<div class="qs-finding-detail">Elements ({total}): {shown}{more}</div>'
+        if m.get("help_url"):
+            body += (f'<div><a href="{html.escape(m["help_url"])}" target="_blank" '
+                     f'rel="noopener" class="qs-hint">Learn more →</a></div>')
+        out = body
+    else:
+        out = f'<div class="qs-finding-detail">{html.escape(detail)}</div>'
+    if occurrences > 1 or len(pages) > 1:
+        out += (f'<div class="qs-hint">{occurrences} occurrence(s) across '
+                f"{len(pages)} page(s)</div>")
+    return out
+
+
 def finding_card(severity: str, title: str, detail: str, page_url: str,
-                 tags: list[str] | None = None) -> str:
-    """Severity-badged finding card (HTML-escaped)."""
+                 tags: list[str] | None = None, *, check: str = "",
+                 meta: dict | None = None, occurrences: int = 1,
+                 pages: list[str] | None = None) -> str:
+    """Severity-badged finding card with structured, escaped detail."""
     tag_html = " ".join(tags or [])
+    body = _finding_detail_html(check, detail, meta or {}, occurrences, pages or [])
     return (f'<div class="qs-card" style="margin-bottom:10px">'
             f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">'
             f'{badge(severity, severity)}{tag_html}</div>'
             f'<div class="qs-finding-title">{html.escape(title)}</div>'
-            f'<div class="qs-finding-detail">{html.escape(detail)}</div>'
+            f'<div style="margin:4px 0 8px">{body}</div>'
             f'{mono(page_url)}</div>')
 
 

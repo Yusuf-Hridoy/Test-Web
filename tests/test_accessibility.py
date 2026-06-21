@@ -14,9 +14,14 @@ async def test_axe_finds_violations(page, http_server):
     assert findings, "axe should report at least one violation on the broken fixture"
     assert all(f.type == "wcag_violation" and f.check == "accessibility" for f in findings)
 
-    rules = {f.detail.split("|")[0].strip() for f in findings}
-    # Missing alt text and low-contrast are the planted violations.
+    # Structured metadata (no pipe-delimited detail); rule ids live in meta.
+    rules = {f.meta["rule_id"] for f in findings}
     assert any("image-alt" in r for r in rules), f"expected image-alt, got {rules}"
     assert any("color-contrast" in r for r in rules), f"expected color-contrast, got {rules}"
 
-    assert all(f.severity.value in ("warning", "minor") for f in findings)
+    # Severity is driven by axe impact and must match what meta records.
+    impact_to_sev = {"critical": "critical", "serious": "warning",
+                     "moderate": "minor", "minor": "minor"}
+    for f in findings:
+        assert f.severity.value == impact_to_sev[f.meta["impact"]]
+        assert f.meta["help_url"]  # "Learn more" link is present

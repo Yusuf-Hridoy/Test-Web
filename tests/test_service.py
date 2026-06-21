@@ -17,20 +17,22 @@ from qascan.config import RunLimits
 from qascan.crawler import crawl
 
 
-async def _direct_findings(url):
+async def _direct_grouped_ids(url):
+    from qascan import aggregate
     r = await crawl(url, RunLimits(max_pages=1, max_depth=0), checks={"exploratory", "seo"})
-    return sorted(f.id for f in r.findings)
+    return sorted(f.id for f in aggregate.group(r.findings))
 
 
 def test_service_run_scan_matches_engine(http_server, tmp_path):
-    # The UI and CLI both go through service.run_scan; it must not alter results.
+    # The UI and CLI both go through service.run_scan; it groups via the same
+    # aggregation the engine output feeds, so results match the grouped engine output.
     import asyncio
 
     outcome = service.run_scan(
         f"{http_server}/broken.html", checks={"exploratory", "seo"},
         limits=RunLimits(max_pages=1, max_depth=0), out_root=tmp_path, persist=False)
     service_ids = sorted(f.id for f in outcome.crawl.findings)
-    direct_ids = asyncio.run(_direct_findings(f"{http_server}/broken.html"))
+    direct_ids = asyncio.run(_direct_grouped_ids(f"{http_server}/broken.html"))
     assert service_ids == direct_ids
     assert (outcome.out_dir / "report.html").exists()
 

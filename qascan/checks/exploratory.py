@@ -75,16 +75,19 @@ def check_console(collector: ConsoleCollector, url: str) -> list[Finding]:
                 check=CHECK, type="console_error_thirdparty", severity=Severity.MINOR,
                 title="Console error (third-party script)",
                 detail=f"{text}  [source: {src}]", page_url=url, key=f"3p|{text}",
+                meta={"message": text, "source": src}, third_party=True,
             ))
         else:
             findings.append(Finding.create(
                 check=CHECK, type="console_error", severity=Severity.WARNING,
                 title="Console error", detail=text, page_url=url, key=text,
+                meta={"message": text, "source": src},
             ))
     for text in collector.page_errors:
         findings.append(Finding.create(
             check=CHECK, type="console_error", severity=Severity.WARNING,
             title="Uncaught JavaScript exception", detail=text, page_url=url, key=text,
+            meta={"message": text},
         ))
     return findings
 
@@ -113,7 +116,7 @@ async def check_broken_images(page: Page, url: str) -> list[Finding]:
         findings.append(Finding.create(
             check=CHECK, type="broken_image", severity=Severity.WARNING,
             title="Broken image", detail=f"Image failed to load: {src}",
-            page_url=url, key=src,
+            page_url=url, key=src, meta={"src": src},
         ))
     return findings
 
@@ -180,19 +183,19 @@ class LinkChecker:
                         check=CHECK, type="link_unverified", severity=Severity.INFO,
                         title="Link could not be verified",
                         detail=f"No response (timeout/connection error): {url}",
-                        page_url=page_url, key=url,
+                        page_url=page_url, key=url, meta={"url": url, "status": None},
                     ))
                 elif status in _BLOCKED_STATUSES:
                     findings.append(Finding.create(
                         check=CHECK, type="link_blocked", severity=Severity.INFO,
                         title="Link blocked (could not verify)",
                         detail=f"HTTP {status} (rate-limited or bot-blocked): {url}",
-                        page_url=page_url, key=url,
+                        page_url=page_url, key=url, meta={"url": url, "status": status},
                     ))
                 elif status >= 400:
                     findings.append(Finding.create(
                         check=CHECK, type="broken_link", severity=Severity.WARNING,
                         title="Broken link", detail=f"Link returned HTTP {status}: {url}",
-                        page_url=page_url, key=url,
+                        page_url=page_url, key=url, meta={"url": url, "status": status},
                     ))
         return findings

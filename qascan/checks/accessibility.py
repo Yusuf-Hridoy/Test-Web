@@ -20,10 +20,10 @@ CHECK = "accessibility"
 # Vendored axe-core version: 4.10.2 (do not fetch from CDN at runtime).
 AXE_PATH = Path(__file__).resolve().parents[2] / "vendor" / "axe.min.js"
 
-# axe impact -> our severity. a11y issues stay at warning/minor; critical is
-# reserved for total page failure (handled by the exploratory check).
+# axe impact drives display severity directly, so the badge never contradicts the
+# stated impact and the summary's "Critical" count is real (Fix 3).
 _IMPACT_TO_SEVERITY = {
-    "critical": Severity.WARNING,
+    "critical": Severity.CRITICAL,
     "serious": Severity.WARNING,
     "moderate": Severity.MINOR,
     "minor": Severity.MINOR,
@@ -60,17 +60,15 @@ async def run_axe(page: Page, url: str, axe_path: Path | None = None) -> list[Fi
         help_text = violation.get("help", rule_id)
         help_url = violation.get("helpUrl", "")
         nodes = violation.get("nodes", [])
-        targets: list[str] = []
-        for node in nodes[:_MAX_NODES_PER_RULE]:
+        all_targets: list[str] = []
+        for node in nodes:
             target = node.get("target", [])
-            targets.append(target[0] if target else "<unknown>")
+            all_targets.append(target[0] if target else "<unknown>")
+        shown_targets = all_targets[:_MAX_NODES_PER_RULE]
 
-        detail_parts = [f"Rule: {rule_id}", f"Impact: {impact}"]
-        if targets:
-            shown = ", ".join(targets)
-            detail_parts.append(f"Elements ({len(nodes)} total): {shown}")
-        if help_url:
-            detail_parts.append(f"More: {help_url}")
+        # Readable detail (still contains the rule id for searchability); the rich,
+        # structured view is rendered from `meta`, not this string.
+        detail = f"{help_text} (rule {rule_id}, axe impact {impact})"
 
         findings.append(
             Finding.create(
@@ -78,10 +76,16 @@ async def run_axe(page: Page, url: str, axe_path: Path | None = None) -> list[Fi
                 type="wcag_violation",
                 severity=severity,
                 title=help_text,
-                detail=" | ".join(detail_parts),
+                detail=detail,
                 page_url=url,
-                # Stable across runs: rule + first element target on this page.
-                key=f"{rule_id}:{targets[0] if targets else ''}",
+                key=f"{rule_id}:{all_targets[0] if all_targets else ''}",
+                meta={
+                    "rule_id": rule_id,
+                    "impact": impact,
+                    "help_url": help_url,
+                    "targets": shown_targets,
+                    "total_elements": len(nodes),
+                },
             )
         )
     return findings

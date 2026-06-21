@@ -44,25 +44,29 @@ def severity_counts(findings: list[Finding]) -> dict[str, int]:
     return {s.value: counts.get(s.value, 0) for s in Severity}
 
 
-def _verdict(counts: dict[str, int]) -> tuple[str, str]:
-    if counts["critical"] > 0:
-        return "Critical issues found", _SEVERITY_COLOR[Severity.CRITICAL]
-    if counts["warning"] > 0:
-        return "Needs attention", _SEVERITY_COLOR[Severity.WARNING]
-    if counts["minor"] > 0:
-        return "Minor issues", _SEVERITY_COLOR[Severity.MINOR]
-    return "Healthy", "#16a34a"
+_VERDICT_COLOR = {"fail": _SEVERITY_COLOR[Severity.CRITICAL],
+                  "review": _SEVERITY_COLOR[Severity.WARNING],
+                  "info": _SEVERITY_COLOR[Severity.MINOR], "pass": "#16a34a"}
 
 
 def build_meta(url: str, result: CrawlResult) -> dict:
+    from . import aggregate
+
+    actionable, informational = aggregate.partition(result.findings)
+    vtext, vkind = aggregate.verdict(actionable)
     return {
         "url": url,
         "generated_at": datetime.now(UTC).isoformat(),
         "pages_scanned": result.pages_scanned,
         "stopped_reason": result.stopped_reason,
         "duration_seconds": result.duration_seconds,
-        "counts_by_severity": severity_counts(result.findings),
+        # Headline counts derive from ACTIONABLE findings only (noise excluded).
+        "counts_by_severity": severity_counts(actionable),
+        "actionable_total": len(actionable),
+        "informational_total": len(informational),
         "total_findings": len(result.findings),
+        "verdict": vtext,
+        "verdict_kind": vkind,
     }
 
 
@@ -97,48 +101,91 @@ def _card(label: str, value: str, color: str = "#111827") -> str:
     )
 
 
+def _detail_html(f: Finding) -> str:
+    """Structured, escaped detail — no pipe-delimited walls. Selectors truncated."""
+    m = f.meta or {}
+    bits: list[str] = []
+    if f.check == "accessibility":
+        if m.get("rule_id"):
+            bits.append(f'<code>{html.escape(m["rule_id"])}</code>')
+        if m.get("impact"):
+            bits.append(f'axe impact: <strong>{html.escape(m["impact"])}</strong>')
+        targets = m.get("targets") or []
+        total = m.get("total_elements", len(targets))
+        if targets:
+            shown = ", ".join(html.escape(t[:60] + ("…" if len(t) > 60 else "")) for t in targets)
+            more = f" (+{total - len(targets)} more)" if total > len(targets) else ""
+            bits.append(f'<div class="detail">Elements ({total}): <code>{shown}</code>{more}</div>')
+        if m.get("help_url"):
+            bits.append(f'<a href="{html.escape(m["help_url"])}" target="_blank" '
+                        f'rel="noopener">Learn more →</a>')
+    else:
+        bits.append(f'<div class="detail">{html.escape(f.detail)}</div>')
+    if f.occurrences > 1 or len(f.pages) > 1:
+        bits.append(f'<div class="detail" style="color:#9ca3af">{f.occurrences} '
+                    f"occurrence(s) across {len(f.pages)} page(s)</div>")
+    return " ".join(bits)
+
+
+def _finding_rows(findings: list[Finding]) -> str:
+    rows = []
+    for f in findings:
+        color = _SEVERITY_COLOR[f.severity]
+        rows.append(
+            '<tr>'
+            f'<td><span class="badge" style="background:{color}">'
+            f"{html.escape(_SEVERITY_LABEL[f.severity])}</span></td>"
+            f'<td><div class="title">{html.escape(f.title)}</div>{_detail_html(f)}</td>'
+            f'<td class="page"><a href="{html.escape(f.page_url)}">'
+            f"{html.escape(f.page_url)}</a></td></tr>"
+        )
+    return "".join(rows)
+
+
 def _render_html(meta: dict, findings: list[Finding]) -> str:
+    from . import aggregate
+
     counts = meta["counts_by_severity"]
-    verdict_text, verdict_color = _verdict(counts)
+    verdict_text = meta["verdict"]
+    verdict_color = _VERDICT_COLOR.get(meta["verdict_kind"], "#16a34a")
+    actionable, informational = aggregate.partition(findings)
 
     cards = "".join(
         [
             _card("Pages scanned", str(meta["pages_scanned"])),
-            _card("Total issues", str(meta["total_findings"])),
+            _card("Issues", str(meta["actionable_total"])),
             _card("Critical", str(counts["critical"]), _SEVERITY_COLOR[Severity.CRITICAL]),
             _card("Warnings", str(counts["warning"]), _SEVERITY_COLOR[Severity.WARNING]),
             _card("Minor", str(counts["minor"]), _SEVERITY_COLOR[Severity.MINOR]),
-            _card("Info / unverified", str(counts["info"]), _SEVERITY_COLOR[Severity.INFO]),
+            _card("Informational", str(meta["informational_total"]),
+                  _SEVERITY_COLOR[Severity.INFO]),
         ]
     )
 
     grouped: dict[str, list[Finding]] = defaultdict(list)
-    for f in findings:  # already severity-sorted; preserve within each group
+    for f in actionable:
         grouped[f.check].append(f)
 
     sections = []
     for check in sorted(grouped):
-        rows = []
-        for f in grouped[check]:
-            color = _SEVERITY_COLOR[f.severity]
-            rows.append(
-                '<tr>'
-                f'<td><span class="badge" style="background:{color}">'
-                f"{html.escape(_SEVERITY_LABEL[f.severity])}</span></td>"
-                f'<td><div class="title">{html.escape(f.title)}</div>'
-                f'<div class="detail">{html.escape(f.detail)}</div></td>'
-                f'<td class="page"><a href="{html.escape(f.page_url)}">'
-                f"{html.escape(f.page_url)}</a></td>"
-                "</tr>"
-            )
-        body = "".join(rows) or '<tr><td colspan="3" class="empty">No issues.</td></tr>'
+        body = _finding_rows(grouped[check])
         sections.append(
             f'<section><h2>{html.escape(check.title())} '
             f'<span class="count">({len(grouped[check])})</span></h2>'
             '<table><thead><tr><th>Severity</th><th>Issue</th><th>Page</th></tr></thead>'
             f"<tbody>{body}</tbody></table></section>"
         )
-    sections_html = "".join(sections) or '<p class="empty">No findings recorded.</p>'
+    if not sections:
+        sections.append('<section><p class="empty">No actionable issues found.</p></section>')
+
+    if informational:
+        sections.append(
+            '<section><h2>Informational / third-party '
+            f'<span class="count">({len(informational)})</span></h2>'
+            '<table><thead><tr><th>Severity</th><th>Item</th><th>Page</th></tr></thead>'
+            f"<tbody>{_finding_rows(informational)}</tbody></table></section>"
+        )
+    sections_html = "".join(sections)
 
     return f"""<!doctype html>
 <html lang="en">

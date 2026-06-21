@@ -89,24 +89,43 @@ def _render_scan_progress(state: dict) -> None:
     st.rerun()
 
 
+def _card_for(f, new_keys: set) -> str:
+    tags = []
+    fid = getattr(f, "id", None) or getattr(f, "finding_key", None)
+    if fid in new_keys:
+        tags.append(theme.badge("new", "review"))
+    return theme.finding_card(
+        _sev(f), f.title, f.detail, f.page_url, tags,
+        check=f.check, meta=getattr(f, "meta", {}) or {},
+        occurrences=getattr(f, "occurrences", 1), pages=getattr(f, "pages", []) or [])
+
+
 def _render_findings(findings, diff: dict | None = None) -> None:
+    """Render actionable findings grouped by check (severity-sorted), with a
+    separate, uncounted Informational / third-party section."""
+    from qascan import aggregate
+
     new_keys = {d.get("finding_key") for d in (diff or {}).get("new", [])}
+    actionable, informational = aggregate.partition(findings)
+
     grouped: dict[str, list] = {}
-    for f in findings:
+    for f in actionable:
         grouped.setdefault(f.check, []).append(f)
     for check in sorted(grouped):
         items = sorted(grouped[check], key=lambda f: _SEV_ORDER.get(_sev(f), 9))
         st.markdown(f"##### {check.title()} · {len(items)}")
         for f in items:
-            tags = []
-            if getattr(f, "finding_key", None) in new_keys:
-                tags.append(theme.badge("new", "review"))
-            st.markdown(theme.finding_card(_sev(f), f.title, f.detail, f.page_url, tags),
-                        unsafe_allow_html=True)
+            st.markdown(_card_for(f, new_keys), unsafe_allow_html=True)
             ev = getattr(f, "evidence", None) or getattr(f, "evidence_path", None)
             if ev and Path(ev).exists():
                 with st.expander("Evidence"):
                     st.image(ev, width=440)
+
+    if informational:
+        with st.expander(f"Informational / third-party · {len(informational)} "
+                         "(not counted in the verdict)"):
+            for f in sorted(informational, key=lambda f: _SEV_ORDER.get(_sev(f), 9)):
+                st.markdown(_card_for(f, new_keys), unsafe_allow_html=True)
 
 
 def _render_scan_results(state: dict) -> None:
@@ -117,19 +136,19 @@ def _render_scan_results(state: dict) -> None:
             st.rerun()
         return
 
+    from qascan import aggregate
+
     outcome = state["outcome"]
     r = outcome.crawl
-    counts = service.severity_counts(r.findings)
-    verdict, vkind = (("Critical issues", "fail") if counts.get("critical") else
-                      ("Needs attention", "review") if counts.get("warning") else
-                      ("Minor issues", "info") if counts.get("minor") else ("Healthy", "pass"))
+    actionable, informational = aggregate.partition(r.findings)
+    verdict, vkind = aggregate.verdict(actionable)
     theme.section_header("Results", state["url"])
     if r.stopped_reason == "cancelled":
         st.warning("Scan cancelled — showing partial results.")
 
     cols = st.columns(4)
     cards = [("Pages scanned", str(r.pages_scanned), None),
-             ("Issues", str(len(r.findings)), None),
+             ("Issues", str(len(actionable)), None),
              ("Verdict", verdict, vkind),
              ("Duration", f"{r.duration_seconds}s", None)]
     for col, (label, value, kind) in zip(cols, cards, strict=True):
@@ -439,9 +458,12 @@ def _history_runs() -> None:
         st.warning("Couldn't load this run. Try another, or re-run the scan.")
         return
 
+    from qascan import aggregate
+
     run = detail.run
+    actionable, _info = aggregate.partition(detail.findings)
     cols = st.columns(4)
-    metrics = [("Status", run.status, run.status), ("Issues", str(len(detail.findings)), None),
+    metrics = [("Status", run.status, run.status), ("Issues", str(len(actionable)), None),
                ("LLM calls", str(run.llm_calls), None), ("Duration", f"{run.duration or 0}s", None)]
     for col, (label, value, kind) in zip(cols, metrics, strict=True):
         col.markdown(theme.metric_card(label, value, kind), unsafe_allow_html=True)
@@ -461,6 +483,7 @@ def _history_runs() -> None:
                         unsafe_allow_html=True)
     if not detail.findings and not detail.step_results:
         st.success("Clean run — nothing flagged.")
+    # 'Issues' metric reflects actionable findings (matches the live scan view).
 
 
 def _history_healed() -> None:

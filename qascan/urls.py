@@ -52,6 +52,59 @@ def normalize_url(url: str) -> str:
     return urlunparse((scheme, netloc, path, parts.params, parts.query, ""))
 
 
+# Query params that are cache-busters / trackers / session ids — volatile across
+# runs, so they must not leak into a finding key (they caused the diff churn).
+_VOLATILE_PARAMS = {
+    "gtm", "auid", "cid", "_", "t", "ts", "timestamp", "time", "v", "ver", "version",
+    "sid", "session", "sessionid", "rand", "r", "nocache", "cb", "cachebuster",
+    "gclid", "fbclid", "msclkid", "dclid", "_ga", "_gid", "mc_eid", "mc_cid",
+}
+_VOLATILE_PREFIXES = ("utm_", "vary", "__")
+_LONG_NUM_RE = re.compile(r"\b\d{4,}\b")
+_HEX_ID_RE = re.compile(r"\b[0-9a-f]{12,}\b", re.IGNORECASE)
+
+
+def _is_volatile_param(name: str, value: str) -> bool:
+    n = name.lower()
+    if n in _VOLATILE_PARAMS or n.startswith(_VOLATILE_PREFIXES):
+        return True
+    # Values that look like timestamps / long ids / hashes.
+    return bool(_LONG_NUM_RE.fullmatch(value) or _HEX_ID_RE.fullmatch(value))
+
+
+def strip_volatile(url: str) -> str:
+    """Drop fragment + volatile query params (cache-busters/trackers/session ids)
+    so a finding key is identical across runs of an unchanged page."""
+    from urllib.parse import parse_qsl, urlencode
+
+    if not url or "://" not in url:
+        # Not a full URL (e.g. an already-normalized message fragment) — leave it.
+        return url
+    url, _ = urldefrag(url)
+    parts = urlparse(url)
+    kept = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+            if not _is_volatile_param(k, v)]
+    query = urlencode(sorted(kept))
+    return urlunparse((parts.scheme.lower(), parts.netloc.lower(), parts.path,
+                       parts.params, query, ""))
+
+
+def normalize_message(message: str) -> str:
+    """Collapse volatile bits inside a console message so identical errors group
+    across runs. Embedded URLs are reduced to scheme+host+path (the whole query is
+    dropped — tracker telemetry params like rcb/tag_exp/gcd are entirely volatile,
+    and a console error's identity is its endpoint, not its query)."""
+    import re as _re
+
+    def _endpoint(m):
+        return m.group(0).split("?", 1)[0].split("#", 1)[0]
+
+    msg = _re.sub(r"https?://[^\s'\"\)]+", _endpoint, message or "")
+    msg = _LONG_NUM_RE.sub("N", msg)
+    msg = _HEX_ID_RE.sub("ID", msg)
+    return msg.strip()
+
+
 def looks_non_html(url: str) -> bool:
     """True if the URL's path has a known non-HTML file extension."""
     ext = os.path.splitext(urlparse(url).path)[1].lower()
